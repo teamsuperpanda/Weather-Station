@@ -1,0 +1,378 @@
+substitutions:
+  awake_duration: 2min
+  update_fq: 15s
+  sleep_duration: 15min
+  rain_duration: 20min
+  battery_full: '3.16'
+  battery_empty: '2.492'
+  battery_diff: '0.668' # '${battery_full}-${battery_empty}'
+
+esphome:
+  name: weather-station
+  platform: ESP32
+  board: esp32dev
+  on_boot: 
+    then:
+      - delay: 60s # connect to Home Assistant etc
+      - deep_sleep.prevent: deep_sleep_control
+      - script.execute: consider_deep_sleep
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+    encryption:
+      key: !secret encryption
+
+ota:
+  password: !secret ap_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  manual_ip:
+    static_ip: !secret network_static_ip 
+    gateway: !secret network_gateway
+    subnet: !secret network_subnet
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Weather-Station Fallback Hotspot"
+    password: !secret ap_password
+
+captive_portal:
+
+web_server:
+  port: 80
+  auth:
+    username: !secret web_username
+    password: !secret web_password
+
+# Deep Sleep
+binary_sensor:
+  - platform: homeassistant
+    id: deep_sleep_bool
+    name: 'Weather Station Deep Sleep'
+    entity_id: input_boolean.weather_station_deep_sleep
+  - platform: status
+    name: "Weather Station Status"
+
+# Deep Sleep
+deep_sleep:
+  id: deep_sleep_control
+  sleep_duration: ${sleep_duration}
+  run_duration:
+    default: ${awake_duration}
+    gpio_wakeup_reason: ${rain_duration}
+  wakeup_pin: 
+    number: 25
+    #inverted: True
+    allow_other_uses: true
+    # mode:
+    #   input: True
+    #   pulldown: True
+  wakeup_pin_mode: INVERT_WAKEUP
+
+script:
+  - id: consider_deep_sleep
+    mode: queued
+    then:
+      - logger.log: 'Staying Awake...'
+      - delay: ${awake_duration}
+      - logger.log: 'Do I need to deep sleep?'
+      - if:
+          condition:
+            binary_sensor.is_on: deep_sleep_bool
+          then:
+            - logger.log: 'Sleeping...'
+            - deep_sleep.allow: deep_sleep_control
+            - delay: 2s
+            - deep_sleep.enter: deep_sleep_control
+          else:
+            - deep_sleep.prevent: deep_sleep_control
+            - logger.log: 'Skip sleep'
+      - delay: 2s
+      - script.execute: consider_deep_sleep
+
+# Enable i2c
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  # scan: true
+
+dallas:
+  - pin: GPIO4
+
+sensor:
+# DS18B20 Dallas temperature sensor
+  - platform: dallas
+    # index: 0
+    address: 0x1a3ce1d44319ba28
+    name: 'Weather Station Dallas Air Temperature'
+    unit_of_measurement: "°C"
+    icon: "mdi:thermometer"
+    device_class: "temperature"
+    state_class: "measurement"
+    accuracy_decimals: 1
+
+  - platform: bme280_i2c
+    address: 0x76
+    update_interval: 60s
+    temperature:
+      name: 'Weather Station BME280 Temperature'
+      unit_of_measurement: "°C"
+      icon: "mdi:thermometer"
+      device_class: "temperature"
+      state_class: "measurement"
+      accuracy_decimals: 1      
+    pressure:
+      name: 'Weather Station BME280 Pressure'
+      unit_of_measurement: "hPa"
+      device_class: "pressure"
+      state_class: "measurement"
+    humidity:
+      name: 'Weather Station BME280 Humidity'
+      unit_of_measurement: "%"
+      icon: "mdi:thermometer"
+      device_class: "humidity"
+      state_class: "measurement"
+
+# Rain gauge with pulse counter 
+  - platform: pulse_counter
+    pin:
+      number: GPIO25
+      allow_other_uses: true
+      inverted: True
+      mode: INPUT_PULLUP    
+    name: 'Weather Station Rainfall'
+    unit_of_measurement: 'mm'
+    count_mode:
+      rising_edge: DISABLE
+      falling_edge: INCREMENT
+#    internal_filter: 14ms          
+    filters:
+      - multiply: 0.367
+    update_interval: ${update_fq}
+
+# Wind speed sensor with pulse counter
+  - platform: pulse_counter
+    pin: 
+      number: GPIO14
+      mode: INPUT_PULLUP
+    name: 'Weather Station Windspeed Meter'
+    icon: 'mdi:weather-windy'
+    id: wind_meter
+    unit_of_measurement: 'km/h'
+    accuracy_decimals: 1
+    update_interval: ${update_fq}
+#    timeout: 5s
+    filters:
+      - multiply: 0.048 #1.492mph per rotation so 1 / 25 (update_fq) / 2 * 2.4
+  - platform: template
+    name: "Weather Station Windspeed Knots"
+    unit_of_measurement: 'knots'
+    update_interval: ${update_fq}
+    lambda: |-
+      return id(wind_meter).state * 0.539957;
+
+## Wind direction support
+# Another ADC platform to track wind direction
+  - platform: adc
+    id: wind_direction
+    pin: GPIO35
+    name: ADC wind
+    attenuation: 11db
+    internal: true
+    update_interval: ${update_fq}
+
+  - platform: resistance
+    sensor: wind_direction
+    id: resistance_sensor
+    configuration: DOWNSTREAM
+    resistor: 10kOhm
+    internal: true
+    name: Resistance Sensor
+    reference_voltage: 3.3V
+    accuracy_decimals: 1
+
+    on_value:
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 30500 
+              below: 33900 
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "N"
+            - sensor.template.publish:
+                id: wind_heading
+                state: 0.0
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 7500 
+              below: 8400 
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "NE"
+            - sensor.template.publish:
+                id: wind_heading
+                state: 45.0
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 88000 
+              below: 115000 
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "E"
+            - sensor.template.publish:
+                id: wind_heading
+                state: 90.0
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 1800 
+              below: 2500 
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "SE"
+            - sensor.template.publish:
+                id: wind_heading
+                state: 135.0
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 3500 
+              below: 4000 
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "S"
+            - sensor.template.publish:
+                id: wind_heading
+                state: 180.0
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 14500 
+              below: 16600 
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "SW"
+            - sensor.template.publish:
+                id: wind_heading
+                state: 225.0
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 850 
+              below: 1200 
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "W"
+            - sensor.template.publish:
+                id: wind_heading
+                state: 270.0
+      - if:
+          condition:
+            sensor.in_range:
+              id: resistance_sensor
+              above: 55000 
+              below: 63000 
+          then:
+            - text_sensor.template.publish:
+                id: wind_dir_card
+                state: "NW"
+            - sensor.template.publish:
+                id: wind_heading
+                state: 315.0
+
+  - platform: template
+    name: "Weather Station Wind Heading"
+    id: wind_heading
+    unit_of_measurement: "°"
+
+  # ADC platform helps track status of battery
+  - platform: adc
+    pin: GPIO39
+    name: 'Weather Station Battery'
+    unit_of_measurement: "V"
+    icon: "mdi:battery-high"
+    device_class: "voltage"
+    state_class: "measurement"
+    accuracy_decimals: 2
+    attenuation: 11db
+    id: voltage
+    filters:
+      - calibrate_linear:
+          method: exact
+          datapoints:
+          - 0.0 -> 0.0
+          - 1.00 -> 3.00
+          - 1.02 -> 3.06
+          - 1.05 -> 3.10
+          - 1.09 -> 3.15
+          - 1.11 -> 3.19
+          - 1.12 -> 3.24
+          - 1.13 -> 3.28
+          - 1.15 -> 3.30
+          - 1.16 -> 3.33
+          - 1.17 -> 3.36
+          - 1.18 -> 3.40
+          - 1.19 -> 3.43
+          - 1.20 -> 3.45    
+          - 1.21 -> 3.48
+          - 1.22 -> 3.52
+          - 1.23 -> 3.54
+          - 1.24 -> 3.56
+          - 1.25 -> 3.61
+          - 1.26 -> 3.64
+          - 1.27 -> 3.66
+          - 1.28 -> 3.69
+          - 1.29 -> 3.72
+          - 1.30 -> 3.75
+          - 1.31 -> 3.78
+          - 1.32 -> 3.81
+          - 1.33 -> 3.84
+          - 1.34 -> 3.89
+          - 1.35 -> 3.91
+          - 1.36 -> 3.94
+          - 1.37 -> 3.97
+          - 1.38 -> 4.00
+          - 1.39 -> 4.05
+          - 1.40 -> 4.08
+          - 1.41 -> 4.10
+          - 1.42 -> 4.15
+          - 1.43 -> 4.20
+
+  # - platform: adc
+  #   pin: GPIO36
+  #   name: 'Solar'
+  #   unit_of_measurement: "V"
+  #   icon: "mdi:battery-high"
+  #   device_class: "voltage"
+  #   state_class: "measurement"
+  #   accuracy_decimals: 3
+  #   # attenuation: 11db
+  #   id: voltage
+  # #  update_interval: 25s
+
+text_sensor:
+  - platform: template
+    name: "Weather Station Wind Cardinal Direction"
+    id: wind_dir_card
