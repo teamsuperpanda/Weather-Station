@@ -44,6 +44,7 @@ Contributions to this project are welcome. Please fork the repository and submit
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-![PXL_20240403_220505570](https://github.com/teamsuperpanda/Weather-Station/assets/60556240/12e95408-0101-4e61-bb9c-39b2de19d0dd)
-![PXL_20240403_220459783](https://github.com/teamsuperpanda/Weather-Station/assets/60556240/a581f776-bab5-4f58-9afc-af63b46e84f8)
-![PXL_20240403_220455021](https://github.com/teamsuperpanda/Weather-Station/assets/60556240/18f87ddd-6480-490a-84f6-73d5c52dc065)
+<img src="https://github.com/teamsuperpanda/Weather-Station/assets/60556240/12e95408-0101-4e61-bb9c-39b2de19d0dd" width="300" alt="Weather Station Image 1">
+<img src="https://github.com/teamsuperpanda/Weather-Station/assets/60556240/a581f776-bab5-4f58-9afc-af63b46e84f8" width="300" alt="Weather Station Image 2">
+<img src="https://github.com/teamsuperpanda/Weather-Station/assets/60556240/18f87ddd-6480-490a-84f6-73d5c52dc065" width="300" alt="Weather Station Image 3">
+
